@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { WeatherData, ForecastDay } from './types/weather'
+import type { Suggestion } from './components/SearchCard'
 import { getWeatherGradient, isNightTime, processForecast } from './utils/weather'
 import Navbar from './components/Navbar'
 import Hero from './components/Hero'
@@ -12,6 +13,7 @@ import WeatherMap from './components/WeatherMap'
 const API_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY
 const WEATHER_URL = 'https://api.openweathermap.org/data/2.5/weather'
 const FORECAST_URL = 'https://api.openweathermap.org/data/2.5/forecast'
+const GEO_URL = 'https://api.openweathermap.org/geo/1.0/direct'
 
 export default function App() {
   const [city, setCity] = useState('')
@@ -21,6 +23,10 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [bgGradient, setBgGradient] = useState('linear-gradient(135deg, #667eea 0%, #764ba2 100%)')
   const [activeTab, setActiveTab] = useState('home')
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [selectedIndex, setSelectedIndex] = useState(-1)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     const style = document.createElement('style')
@@ -36,6 +42,37 @@ export default function App() {
     document.head.appendChild(style)
     return () => { document.head.removeChild(style) }
   }, [])
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+
+    const trimmed = city.trim()
+    if (trimmed.length < 2) {
+      setSuggestions([])
+      setShowSuggestions(false)
+      return
+    }
+
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`${GEO_URL}?q=${trimmed}&limit=5&appid=${API_KEY}`)
+        if (!res.ok) return
+        const data: { name: string; country: string; state?: string }[] = await res.json()
+        const sorted = [...data].sort((a, b) => {
+          if (a.country === 'ID' && b.country !== 'ID') return -1
+          if (a.country !== 'ID' && b.country === 'ID') return 1
+          return 0
+        })
+        setSuggestions(sorted)
+        setShowSuggestions(true)
+        setSelectedIndex(-1)
+      } catch {
+        /* ignore */
+      }
+    }, 300)
+
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [city])
 
   function getBg(): string {
     if (weather) {
@@ -87,6 +124,8 @@ export default function App() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    setShowSuggestions(false)
+    setSuggestions([])
     if (city.trim()) handleSearch(city.trim())
   }
 
@@ -94,6 +133,38 @@ export default function App() {
     setCity(name)
     fetchWeather(name)
     setActiveTab('home')
+  }
+
+  function handleSuggestionSelect(s: Suggestion) {
+    setShowSuggestions(false)
+    setSuggestions([])
+    const q = s.state ? `${s.name},${s.state},${s.country}` : `${s.name},${s.country}`
+    setCity(s.name)
+    fetchWeather(q)
+    if (activeTab === 'forecast') fetchForecast(q)
+    setActiveTab('home')
+  }
+
+  function handleInputKeyDown(e: React.KeyboardEvent) {
+    if (!showSuggestions || suggestions.length === 0) return
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setSelectedIndex(prev => prev < suggestions.length - 1 ? prev + 1 : 0)
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setSelectedIndex(prev => prev > 0 ? prev - 1 : suggestions.length - 1)
+    } else if (e.key === 'Enter' && selectedIndex >= 0) {
+      e.preventDefault()
+      handleSuggestionSelect(suggestions[selectedIndex])
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false)
+      setSelectedIndex(-1)
+    }
+  }
+
+  function handleInputBlur() {
+    setTimeout(() => setShowSuggestions(false), 200)
   }
 
   function handleTabChange(tab: string) {
@@ -121,7 +192,10 @@ export default function App() {
           }}>
             {!weather && !loading && <Hero />}
             <SearchCard city={city} onCityChange={setCity} onSubmit={handleSubmit}
-              loading={loading} error={error} weather={weather} />
+              loading={loading} error={error} weather={weather}
+              suggestions={suggestions} showSuggestions={showSuggestions}
+              selectedIndex={selectedIndex} onSuggestionSelect={handleSuggestionSelect}
+              onInputKeyDown={handleInputKeyDown} onInputBlur={handleInputBlur} />
           </section>
           <FeaturedCities onSelect={handleCitySelect} />
           <TipsSection />
@@ -133,7 +207,10 @@ export default function App() {
           <div style={{ maxWidth: '520px', margin: '0 auto' }}>
             <SearchCard city={city} onCityChange={setCity}
               onSubmit={(e) => { e.preventDefault(); if (city.trim()) { setCity(city.trim()); fetchForecast(city.trim()) } }}
-              loading={loading} error={error} weather={null} />
+              loading={loading} error={error} weather={null}
+              suggestions={suggestions} showSuggestions={showSuggestions}
+              selectedIndex={selectedIndex} onSuggestionSelect={handleSuggestionSelect}
+              onInputKeyDown={handleInputKeyDown} onInputBlur={handleInputBlur} />
           </div>
           {forecast.length > 0 && !loading && <Forecast forecast={forecast} />}
           {!city.trim() && !loading && (
@@ -149,7 +226,10 @@ export default function App() {
           <div style={{ maxWidth: '520px', margin: '0 auto' }}>
             <SearchCard city={city} onCityChange={setCity}
               onSubmit={(e) => { e.preventDefault(); if (city.trim()) { setCity(city.trim()); fetchWeather(city.trim()) } }}
-              loading={loading} error={error} weather={null} />
+              loading={loading} error={error} weather={null}
+              suggestions={suggestions} showSuggestions={showSuggestions}
+              selectedIndex={selectedIndex} onSuggestionSelect={handleSuggestionSelect}
+              onInputKeyDown={handleInputKeyDown} onInputBlur={handleInputBlur} />
           </div>
           {weather && !loading && <WeatherMap weather={weather} />}
           {!weather && !loading && (
